@@ -71,7 +71,7 @@ export default {
         try {
           this.loading = true
           this.faceModel = await this.$blazeface.load()
-          this.emotionModel = await this.$tf.loadLayersModel('/models/emotion/model.json')
+          this.emotionModel = await this.$tf.loadLayersModel('https://snlangsuan.github.io/demo-tensorflowjs/models/emotion/model.json')
           this.startCam()
         } catch (error) {
           this.errorModelMessage = error.message
