@@ -2,7 +2,7 @@
   <div v-resize="onResize" class="emotion-container" style="width: 100%">
     <div class = "cam-box">
       <video v-show="false" id="webcam" autoplay muted width="100%" height="100%"></video>
-      <canvas id="webcam_canvas" :width="mWidth" :height="mHeight">Canvas not supported</canvas>
+      <canvas id="webcam_canvas" :width="canvasWidth" :height="canvasHeight">Canvas not supported</canvas>
       <div class="emotion-face-list">
         <template v-for="(face, i) in faces">
           <div :key="'face-' + i" class="emotion-face-item">
@@ -20,13 +20,14 @@
     <v-overlay :value="unsupported">
       <div class="text-center">
         <v-icon size="64">mdi-camera-off-outline</v-icon>
-        <div class="text-h6 pt-3">We can`t find your camera</div>
+        <div class="text-h6 py-3">We can`t find your camera</div>
+        <v-btn color="primary" @click="retryCamera">retry</v-btn>
       </div>
     </v-overlay>
-    <v-dialog v-model="errorModelDialog" max-width="480" persistent>
+    <v-dialog v-model="errorDialog" max-width="480" persistent>
       <v-card>
         <v-card-text class="py-3">
-          Can`t not be load detection model.
+          {{ errorMessage }}
         </v-card-text>
       </v-card>
     </v-dialog>
@@ -47,10 +48,16 @@ export default {
       video: null,
       videoCanvas: null,
       videoContext: null,
+      videoWidth: 1280,
+      videoHeight: 720,
+      canvasWidth: 100,
+      canvasHeight: 100,
       mWidth: 100,
       mHeight: 100,
-      errorModelDialog: false,
-      errorModelMessage: '',
+      mX: 0,
+      mY: 0,
+      errorDialog: false,
+      errorMessage: '',
       faces: [],
       countDelay: 3000,
       delayDetection: 2000,
@@ -62,8 +69,13 @@ export default {
   },
   methods: {
     onResize() {
-      this.mWidth = window.innerWidth
-      this.mHeight = window.innerHeight
+      this.canvasWidth = window.innerWidth
+      this.canvasHeight = window.innerHeight
+      const ratio = this.videoHeight / this.videoWidth
+      this.mWidth = this.canvasWidth
+      this.mHeight = this.canvasWidth * ratio
+      this.mY = this.canvasHeight/ 2 - this.mHeight / 2
+      console.log('resize', ratio, this.canvasWidth, this.canvasHeight)
     },
     async initModel() {
       this.unsupported = !this.getUserMediaSupported()
@@ -74,8 +86,9 @@ export default {
           this.emotionModel = await this.$tf.loadLayersModel('https://snlangsuan.github.io/demo-tensorflowjs/models/emotion/model.json')
           this.startCam()
         } catch (error) {
-          this.errorModelMessage = error.message
-          this.errorModelDialog = true
+          console.error(error)
+          this.errorMessage = 'Can`t not be load detection model.'
+          this.errorDialog = true
         } finally {
           this.loading = false
         }
@@ -90,24 +103,42 @@ export default {
         this.control = true
         const constraints = {
           audio: false,
-          video: { width: 1280, height: 720 },
+          video: { width: this.videoWidth, height: this.videoHeight },
         }
         const stream = await navigator.mediaDevices.getUserMedia(constraints)
         this.video.srcObject = stream
         this.video.addEventListener('loadeddata', this.predictWebcam)
         this.video.play()
+        this.unsupported = false
       } catch (error) {
         console.error(error)
+        // this.errorMessage = 'Can`t not be load detection model.'
+        // this.errorDialog = true
+        this.unsupported = true
       }
+    },
+    async retryCamera() {
+      // await navigator.permissions.revoke({})
+      const permissionStatus = await navigator.permissions.query({ name: 'camera' })
+      console.log(permissionStatus)
+      permissionStatus.onchange = (e) => {
+        const newState = e.target.state
+        if (e.type === 'change' && newState === 'granted') {
+          this.startCam()
+        }
+      }
+      this.startCam()
+      // permissionStatus.onchange(() => console.log('camera permission state has changed to ', this.state))
     },
     async predictWebcam() {
       try {
-        this.videoContext.clearRect(0, 0, this.mWidth, this.mHeight)
-        this.videoContext.drawImage(this.video, 0, 0, this.mWidth, this.mHeight)
+        this.videoContext.clearRect(0, 0, this.canvasWidth, this.canvasHeight)
+        this.videoContext.drawImage(this.video, this.mX, this.mY, this.mWidth, this.mHeight)
         this.countDelay += 100
         // this.videoContext.fillRect(20, 20, 200, 200)
         if (this.faceModel && this.emotionModel) {
-          const frame = this.videoContext.getImageData(0, 0, this.mWidth, this.mHeight)
+          const frame = this.videoContext.getImageData(this.mX, this.mY, this.mWidth, this.mHeight)
+          // this.faces.push(this.toDataURL(frame))
           const predictions = await this.faceModel.estimateFaces(frame)
           // console.log(predictions)
           // if (this.countDelay >= this.delayDetection) this.faces = []
@@ -126,7 +157,14 @@ export default {
             // this.videoContext.stroke()
 
             // if (this.countDelay >= this.delayDetection) {
-              const frame2 = this.videoContext.getImageData(start[0], start[1], size[0], size[1])
+              const landmark = item.landmarks
+              // const nosex = landmark[2][0]
+              // const nosey = landmark[2][1]
+              // const right = landmark[4][0]
+              // const left = landmark[5][0]
+              // const length = (left - right) / 2 + 5
+              // const frame2 = this.videoContext.getImageData(nosex - length, nosey - length, 2 * length, 2 * length)
+              const frame2 = this.videoContext.getImageData(start[0], start[1] + this.mY, size[0], size[1])
               let imageTensor = this.$tf.browser.fromPixels(frame2, 3).resizeBilinear([96, 96]).mean(2).toFloat().expandDims(-1)
               imageTensor = this.$tf.image.grayscaleToRGB(imageTensor).expandDims(0)
               const result = this.emotionModel.predict(imageTensor)
@@ -140,13 +178,17 @@ export default {
                 this.videoContext.beginPath()
                 this.videoContext.strokeStyle= color
                 this.videoContext.lineWidth = 4
-                this.videoContext.rect(start[0], start[1],size[0], size[1])
+                this.videoContext.rect(start[0], start[1] + this.mY, size[0], size[1])
                 this.videoContext.stroke()
 
+                landmark.forEach((x) => {
+                  this.videoContext.fillRect(x[0], x[1] + this.mY, 5, 5)
+                })
+
                 this.videoContext.fillStyle = color
-                this.videoContext.fillRect(start[0], start[1], size[0], 30)
+                this.videoContext.fillRect(start[0], start[1] + this.mY, size[0], 30)
                 this.videoContext.fillStyle = 'white'
-                this.videoContext.fillText(label + ' (' + numeral(emotionProb).format('0.00%') + ')', start[0] + 10, start[1] + 20)
+                this.videoContext.fillText(label + ' (' + numeral(emotionProb).format('0.00%') + ')', start[0] + 10, start[1] + this.mY + 20)
               }
             // }
           }
